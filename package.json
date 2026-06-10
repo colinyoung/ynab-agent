@@ -1,0 +1,29 @@
+{
+  "name": "ynab-agent",
+  "version": "0.1.0",
+  "description": "Agent-first YNAB CLI + MCP server: local SQLite mirror, drift detection, observed.md generation",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "bin": {
+    "ynab-agent": "dist/cli/index.js",
+    "ynab-agent-mcp": "dist/mcp/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "cli": "node dist/cli/index.js",
+    "mcp": "node dist/mcp/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "commander": "^13.0.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
