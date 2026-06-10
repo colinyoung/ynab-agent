@@ -18,10 +18,10 @@ export interface GistResult {
 }
 
 function ghToken(): string {
-  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? process.env.GIST_TOKEN;
   if (!token) {
     throw new Error(
-      "GITHUB_TOKEN (or GH_TOKEN) is not set. Create a token with the 'gist' scope at " +
+      "GITHUB_TOKEN, GH_TOKEN, or GIST_TOKEN is not set. Create a token with the 'gist' scope at " +
         "https://github.com/settings/tokens and export it."
     );
   }

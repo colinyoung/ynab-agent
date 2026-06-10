@@ -6,6 +6,7 @@ import { configPath, getToken, loadConfig, saveConfig, type Config } from "../co
 import { openDb } from "../core/db.js";
 import {
   categorySpendByMonth,
+  categorySpendInRange,
   fmtUsd,
   listAccounts,
   listTransactions,
@@ -248,6 +249,82 @@ note
       const ok = removeNote(db, parseInt(id, 10));
       if (!ok) fail(new Error(`no note #${id}`));
       console.log(`removed #${id}`);
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+program
+  .command("floor-estimate")
+  .description(
+    "Estimate a realistic expense floor from actuals: per-category MEDIAN monthly outflow " +
+      "over the window (medians suppress one-offs). Respects floorExcludeGroups; internal " +
+      "YNAB groups always excluded."
+  )
+  .requiredOption("--since <yyyy-mm>", "first month of window (inclusive)")
+  .option("--until <yyyy-mm>", "last month of window (inclusive; default last complete month)")
+  .option("--exclude <names>", "comma-separated category names to exclude (one-offs, savings, reimbursables)", "")
+  .action((opts: { since: string; until?: string; exclude: string }) => {
+    try {
+      const cfg = loadConfig();
+      const db = openDb(cfg.dbPath);
+      const now = new Date();
+      const defaultUntil = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1))
+        .toISOString()
+        .slice(0, 7);
+      const until = opts.until ?? defaultUntil;
+      const excluded = opts.exclude
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+      const internal = new Set(["Internal Master Category", "Credit Card Payments"]);
+      const rows = categorySpendInRange(db, opts.since, until, cfg.floorExcludeGroups).filter(
+        (r) => !internal.has(r.group_name) && !excluded.includes(r.category.toLowerCase())
+      );
+      // enumerate months in window
+      const monthList: string[] = [];
+      for (let d = new Date(opts.since + "-01T00:00:00Z"); d.toISOString().slice(0, 7) <= until; d.setUTCMonth(d.getUTCMonth() + 1)) {
+        monthList.push(d.toISOString().slice(0, 7));
+      }
+      const byCat = new Map<string, { group: string; values: Map<string, number> }>();
+      for (const r of rows) {
+        const e = byCat.get(r.category) ?? { group: r.group_name, values: new Map() };
+        e.values.set(r.month, toDollars(r.outflow));
+        byCat.set(r.category, e);
+      }
+      const median = (vals: number[]): number => {
+        const s = [...vals].sort((a, b) => a - b);
+        const mid = Math.floor(s.length / 2);
+        return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+      };
+      const cats = [...byCat.entries()]
+        .map(([category, e]) => {
+          const series = monthList.map((m) => e.values.get(m) ?? 0);
+          const med = median(series);
+          const mean = series.reduce((a, b) => a + b, 0) / series.length;
+          return { category, group: e.group, median: Math.round(med), mean: Math.round(mean), series };
+        })
+        .filter((c) => c.median > 0 || c.mean > 0)
+        .sort((a, b) => b.median - a.median);
+      const sumMedian = cats.reduce((a, c) => a + c.median, 0);
+      const sumMean = cats.reduce((a, c) => a + c.mean, 0);
+      const result = {
+        window: { since: opts.since, until, months: monthList },
+        excludedCategories: excluded,
+        excludedGroups: cfg.floorExcludeGroups,
+        estimatedFloorMedian: sumMedian,
+        estimatedFloorMean: sumMean,
+        categories: cats,
+      };
+      out(result, !!program.opts().json, () => {
+        for (const c of cats) {
+          console.log(
+            `${c.category.padEnd(40)} median $${String(c.median).padStart(7)}  mean $${String(c.mean).padStart(7)}  [${c.series.map((v) => Math.round(v)).join(", ")}]`
+          );
+        }
+        console.log(`\nestimated floor (sum of medians): $${sumMedian.toLocaleString("en-US")}/mo`);
+        console.log(`estimated floor (sum of means):   $${sumMean.toLocaleString("en-US")}/mo  (inflated by one-offs)`);
+      });
     } catch (e) {
       fail(e);
     }

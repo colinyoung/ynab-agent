@@ -92,6 +92,31 @@ export function categorySpendByMonth(
     .all(cutoffMonth, ...ex.params) as unknown as CategoryMonth[];
 }
 
+export function categorySpendInRange(
+  db: DatabaseSync,
+  sinceMonth: string,
+  untilMonth: string,
+  excludeGroups: string[] = []
+): CategoryMonth[] {
+  const ex = excludeGroupsClause("e.", excludeGroups);
+  return db
+    .prepare(
+      `SELECT substr(e.date, 1, 7) AS month,
+              COALESCE(e.category_name, '(uncategorized)') AS category,
+              COALESCE(c.group_name, '') AS group_name,
+              -SUM(e.amount) AS outflow
+       FROM effective_tx e
+       LEFT JOIN categories c ON c.id = e.category_id
+       WHERE e.amount < 0
+         AND e.transfer_account_id IS NULL
+         AND e.account_id IN (SELECT id FROM accounts WHERE on_budget = 1)
+         AND substr(e.date, 1, 7) >= ? AND substr(e.date, 1, 7) <= ? ${ex.sql}
+       GROUP BY month, category
+       ORDER BY month ASC, outflow DESC`
+    )
+    .all(sinceMonth, untilMonth, ...ex.params) as unknown as CategoryMonth[];
+}
+
 export interface GroupPnlRow {
   month: string;
   outflow: number; // milliunits, positive
