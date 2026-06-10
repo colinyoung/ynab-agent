@@ -6,7 +6,7 @@
  * modeled expense floor, category drift, and large/unusual transactions.
  */
 import type { DatabaseSync } from "node:sqlite";
-import type { Config } from "../core/config.js";
+import { describeFloor, floorForMonth, type Config } from "../core/config.js";
 import { getMeta } from "../core/db.js";
 import {
   categorySpendByMonth,
@@ -37,40 +37,46 @@ export function generateObservedMd(db: DatabaseSync, cfg: Config): string {
 
   lines.push("## Monthly outflow vs modeled floor");
   lines.push("");
-  if (cfg.expenseFloor > 0) {
-    lines.push(`Modeled expense floor: **$${cfg.expenseFloor.toLocaleString("en-US")}/mo**`);
-  } else {
-    lines.push("Modeled expense floor: _not set_ (run `ynab-agent config set expenseFloor <dollars>`)");
-  }
+  lines.push(`Modeled expense floor: ${describeFloor(cfg.expenseFloor)}`);
   lines.push("");
-  lines.push("| Month | Outflow | vs floor | Inflow | Net |");
-  lines.push("|---|---|---|---|---|");
+  lines.push("| Month | Outflow | Floor | Δ vs floor | Inflow | Net |");
+  lines.push("|---|---|---|---|---|---|");
 
-  let trailingSum = 0;
+  let trailingOut = 0;
+  let trailingFloor = 0;
+  let flooredMonths = 0;
   for (const m of [...months].reverse()) {
     const t = byMonth.get(m);
     if (!t) continue;
     const out = toDollars(t.outflow);
-    trailingSum += out;
-    const delta =
-      cfg.expenseFloor > 0
-        ? `${out >= cfg.expenseFloor ? "+" : "−"}$${Math.abs(Math.round(out - cfg.expenseFloor)).toLocaleString("en-US")} (${(((out - cfg.expenseFloor) / cfg.expenseFloor) * 100).toFixed(1)}%)`
-        : "—";
-    lines.push(`| ${m} | ${fmtUsd(t.outflow)} | ${delta} | ${fmtUsd(t.inflow)} | ${fmtUsd(t.net)} |`);
+    trailingOut += out;
+    const floor = floorForMonth(cfg.expenseFloor, m);
+    let floorCell = "—";
+    let delta = "—";
+    if (floor > 0) {
+      trailingFloor += floor;
+      flooredMonths++;
+      floorCell = `$${floor.toLocaleString("en-US")}`;
+      delta = `${out >= floor ? "+" : "−"}$${Math.abs(Math.round(out - floor)).toLocaleString("en-US")} (${(((out - floor) / floor) * 100).toFixed(1)}%)`;
+    }
+    lines.push(`| ${m} | ${fmtUsd(t.outflow)} | ${floorCell} | ${delta} | ${fmtUsd(t.inflow)} | ${fmtUsd(t.net)} |`);
   }
   if (months.length > 0) {
-    const avg = trailingSum / months.length;
+    const avg = trailingOut / months.length;
     lines.push("");
     lines.push(`**Trailing ${months.length}-month average outflow: $${Math.round(avg).toLocaleString("en-US")}/mo**`);
-    if (cfg.expenseFloor > 0) {
-      const driftPct = ((avg - cfg.expenseFloor) / cfg.expenseFloor) * 100;
+    if (flooredMonths > 0) {
+      const avgFloor = trailingFloor / flooredMonths;
+      const driftPct = ((avg - avgFloor) / avgFloor) * 100;
       const verdict =
         Math.abs(driftPct) < 5
           ? "tracking the modeled floor"
           : driftPct > 0
             ? `running ${driftPct.toFixed(1)}% ABOVE the modeled floor — projections using the floor are optimistic`
             : `running ${Math.abs(driftPct).toFixed(1)}% below the modeled floor — projections have slack`;
-      lines.push(`Reality check: actuals are ${verdict}.`);
+      lines.push(`Reality check: actuals are ${verdict} (avg floor in effect: $${Math.round(avgFloor).toLocaleString("en-US")}/mo).`);
+    } else {
+      lines.push("_No floor set — run `ynab-agent config set-floor <yyyy-mm> <dollars>`._");
     }
   } else {
     lines.push("");

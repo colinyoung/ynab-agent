@@ -196,13 +196,31 @@ config
   });
 config
   .command("set <key> <value>")
-  .description("Set a config key: budgetId, dbPath, expenseFloor, largeTxThreshold")
+  .description("Set a config key: budgetId, dbPath, expenseFloor (number or JSON schedule), largeTxThreshold")
   .action((key: string, value: string) => {
-    const numeric = ["expenseFloor", "largeTxThreshold"];
-    const valid = ["budgetId", "dbPath", ...numeric];
+    const valid = ["budgetId", "dbPath", "expenseFloor", "largeTxThreshold"];
     if (!valid.includes(key)) fail(new Error(`unknown key '${key}'; valid: ${valid.join(", ")}`));
-    const v: Partial<Config> = { [key]: numeric.includes(key) ? parseFloat(value) : value };
-    const merged = saveConfig(v);
+    let parsed: unknown = value;
+    if (key === "largeTxThreshold") parsed = parseFloat(value);
+    if (key === "expenseFloor") {
+      // accept a flat number or a JSON schedule: '{"2026-01": 13705, "2030-07": 21500}'
+      parsed = value.trim().startsWith("{") ? JSON.parse(value) : parseFloat(value);
+    }
+    const merged = saveConfig({ [key]: parsed } as Partial<Config>);
+    console.log(JSON.stringify(merged, null, 2));
+  });
+config
+  .command("set-floor <month> <dollars>")
+  .description("Set the expense floor in effect from <yyyy-mm> onward (converts a flat floor to a schedule)")
+  .action((month: string, dollars: string) => {
+    if (!/^\d{4}-\d{2}$/.test(month)) fail(new Error("month must be yyyy-mm"));
+    const amount = parseFloat(dollars);
+    if (!Number.isFinite(amount) || amount < 0) fail(new Error("dollars must be a non-negative number"));
+    const cur = loadConfig().expenseFloor;
+    const schedule: Record<string, number> =
+      typeof cur === "number" ? (cur > 0 ? { "0000-01": cur } : {}) : { ...cur };
+    schedule[month] = amount;
+    const merged = saveConfig({ expenseFloor: schedule });
     console.log(JSON.stringify(merged, null, 2));
   });
 

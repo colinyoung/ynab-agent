@@ -2,15 +2,48 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+/**
+ * Modeled expense floor: either a flat dollars/month, or a dated schedule
+ * mapping "yyyy-mm" → dollars/month. With a schedule, each month is compared
+ * against the floor in effect at that time, so drift history stays honest
+ * across plan changes (e.g. {"2026-01": 13705, "2030-07": 21500}).
+ */
+export type FloorSchedule = number | Record<string, number>;
+
 export interface Config {
   /** YNAB budget ID; "last-used" works for most single-budget setups */
   budgetId: string;
   /** Path to the local SQLite mirror */
   dbPath: string;
-  /** Modeled monthly expense floor in dollars (used by observe drift report) */
-  expenseFloor: number;
+  /** Modeled monthly expense floor (used by observe drift report) */
+  expenseFloor: FloorSchedule;
   /** Transactions above this (dollars, absolute) get flagged by observe */
   largeTxThreshold: number;
+}
+
+/** Floor in effect for a given "yyyy-mm" month; 0 if unset/no entry yet. */
+export function floorForMonth(floor: FloorSchedule, month: string): number {
+  if (typeof floor === "number") return floor;
+  let best = 0;
+  let bestKey = "";
+  for (const [key, value] of Object.entries(floor)) {
+    if (key <= month && key >= bestKey) {
+      bestKey = key;
+      best = value;
+    }
+  }
+  return best;
+}
+
+export function describeFloor(floor: FloorSchedule): string {
+  if (typeof floor === "number") {
+    return floor > 0 ? `$${floor.toLocaleString("en-US")}/mo (flat)` : "_not set_";
+  }
+  const entries = Object.entries(floor).sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length === 0) return "_not set_";
+  return entries
+    .map(([m, v]) => `$${v.toLocaleString("en-US")}/mo ${m === "0000-01" ? "(baseline)" : `from ${m}`}`)
+    .join("; ");
 }
 
 const CONFIG_DIR = join(homedir(), ".config", "ynab-agent");

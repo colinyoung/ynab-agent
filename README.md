@@ -20,7 +20,11 @@ export YNAB_TOKEN=<your token>
 
 node dist/cli/index.js budgets                 # find your budget id (or use "last-used")
 node dist/cli/index.js config set budgetId <id>
-node dist/cli/index.js config set expenseFloor 13705
+
+# expense floor is a dated schedule: each month's actuals are compared
+# against the floor in effect at that time
+node dist/cli/index.js config set-floor 2026-01 13705
+node dist/cli/index.js config set-floor 2030-07 21500   # e.g. post-house-purchase
 node dist/cli/index.js sync                    # first sync is full; subsequent are deltas
 ```
 
