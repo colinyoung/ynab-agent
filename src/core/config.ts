@@ -19,6 +19,20 @@ export interface Config {
   expenseFloor: FloorSchedule;
   /** Transactions above this (dollars, absolute) get flagged by observe */
   largeTxThreshold: number;
+  /**
+   * Category GROUP names excluded from the floor comparison (e.g. an
+   * investment property whose cashflows the household floor doesn't model).
+   * Excluded groups get their own netted P&L section in observe instead.
+   */
+  floorExcludeGroups: string[];
+  /**
+   * Inflow offsets for excluded groups: group name → payee substrings whose
+   * inflows count against that group's costs (e.g. {"Investment Property":
+   * ["Winnemac"]} nets rental income against property costs).
+   */
+  offsets: Record<string, string[]>;
+  /** Secret gist id for observed.md publishing (set automatically on first --gist) */
+  gistId: string;
 }
 
 /** Floor in effect for a given "yyyy-mm" month; 0 if unset/no entry yet. */
@@ -55,6 +69,9 @@ const DEFAULTS: Config = {
   dbPath: DEFAULT_DB,
   expenseFloor: 0,
   largeTxThreshold: 1000,
+  floorExcludeGroups: [],
+  offsets: {},
+  gistId: "",
 };
 
 export function loadConfig(): Config {

@@ -43,6 +43,16 @@ ynab-agent spend --months 6                          # monthly outflow/inflow/ne
 ynab-agent spend --by category --months 3
 ynab-agent observe                                   # drift report to stdout
 ynab-agent observe --sync --write observed.md        # refresh + write for skill ingestion
+ynab-agent observe --sync --gist                     # publish to secret gist (needs GITHUB_TOKEN; creates + remembers gist id)
+
+# institutional memory: explain anomalies so reports self-explain
+ynab-agent note add "May spike = whole-summer camp prepay" --category "Happy Hall" --month 2026-05
+ynab-agent note list
+
+# exclude business/property cashflows from the household floor comparison;
+# they get their own netted P&L section in observe instead
+ynab-agent config set floorExcludeGroups '["Investment Property"]'
+ynab-agent config set offsets '{"Investment Property": ["Winnemac"]}'
 ```
 
 `--json` on any command gives agent-friendly output. Amounts are YNAB milliunits
@@ -65,7 +75,9 @@ Stdio transport. Register in your MCP client:
 ```
 
 Tools: `ynab_sync`, `ynab_list_transactions`, `ynab_spend_summary`,
-`ynab_list_accounts`, `ynab_observe`.
+`ynab_list_accounts`, `ynab_observe`, and `ynab_cli` — a generic passthrough that
+runs any CLI command and returns stdout, so agents get the full CLI surface
+(notes, config, gist publishing, future commands) without MCP schema changes.
 
 ## The observe loop (skill integration)
 

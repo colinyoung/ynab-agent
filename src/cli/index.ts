@@ -12,7 +12,9 @@ import {
   monthlyTotals,
   toDollars,
 } from "../core/queries.js";
+import { addNote, listNotes, removeNote } from "../core/notes.js";
 import { syncBudget } from "../core/sync.js";
+import { publishGist, stableRawUrl } from "../observe/gist.js";
 import { generateObservedMd } from "../observe/report.js";
 
 const program = new Command();
@@ -167,7 +169,8 @@ program
   .description("Generate observed.md — actuals vs modeled assumptions, for skill ingestion")
   .option("--write <path>", "write to file instead of stdout")
   .option("--sync", "delta-sync before generating")
-  .action(async (opts: { write?: string; sync?: boolean }) => {
+  .option("--gist", "publish to a secret GitHub gist (creates one on first use; needs GITHUB_TOKEN)")
+  .action(async (opts: { write?: string; sync?: boolean; gist?: boolean }) => {
     try {
       const cfg = loadConfig();
       const db = openDb(cfg.dbPath);
@@ -179,9 +182,72 @@ program
       if (opts.write) {
         writeFileSync(opts.write, md);
         console.error(`wrote ${opts.write}`);
-      } else {
+      }
+      if (opts.gist) {
+        const result = await publishGist(md, cfg.gistId || undefined);
+        if (result.created) {
+          saveConfig({ gistId: result.id });
+          console.error(`created secret gist ${result.id} (saved to config)`);
+        }
+        console.error(`gist:    ${result.htmlUrl}`);
+        console.error(`raw url: ${stableRawUrl(result.htmlUrl)}`);
+      }
+      if (!opts.write && !opts.gist) {
         console.log(md);
       }
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+const note = program.command("note").description("Persistent observations (institutional memory for agents)");
+note
+  .command("add <text>")
+  .description('e.g. note add "May spike = whole-summer camp prepay" --category "Happy Hall" --month 2026-05')
+  .option("--category <name>", "category this observation applies to")
+  .option("--payee <name>", "payee this observation applies to")
+  .option("--month <yyyy-mm>", "month this observation applies to")
+  .action((text: string, opts: { category?: string; payee?: string; month?: string }) => {
+    try {
+      if (opts.month && !/^\d{4}-\d{2}$/.test(opts.month)) fail(new Error("month must be yyyy-mm"));
+      const cfg = loadConfig();
+      const db = openDb(cfg.dbPath);
+      const n = addNote(db, text, opts);
+      console.log(JSON.stringify(n, null, 2));
+    } catch (e) {
+      fail(e);
+    }
+  });
+note
+  .command("list")
+  .option("--category <name>")
+  .option("--payee <name>")
+  .option("--month <yyyy-mm>")
+  .option("--limit <n>", "max rows (default 100)", (v) => parseInt(v, 10))
+  .action((opts: { category?: string; payee?: string; month?: string; limit?: number }) => {
+    try {
+      const cfg = loadConfig();
+      const db = openDb(cfg.dbPath);
+      const rows = listNotes(db, opts, opts.limit ?? 100);
+      out(rows, !!program.opts().json, () => {
+        for (const n of rows) {
+          const scope = [n.month, n.category, n.payee].filter(Boolean).join(" / ");
+          console.log(`#${n.id} ${scope ? `[${scope}] ` : ""}${n.text}`);
+        }
+      });
+    } catch (e) {
+      fail(e);
+    }
+  });
+note
+  .command("rm <id>")
+  .action((id: string) => {
+    try {
+      const cfg = loadConfig();
+      const db = openDb(cfg.dbPath);
+      const ok = removeNote(db, parseInt(id, 10));
+      if (!ok) fail(new Error(`no note #${id}`));
+      console.log(`removed #${id}`);
     } catch (e) {
       fail(e);
     }
@@ -196,15 +262,33 @@ config
   });
 config
   .command("set <key> <value>")
-  .description("Set a config key: budgetId, dbPath, expenseFloor (number or JSON schedule), largeTxThreshold")
+  .description(
+    "Set a config key: budgetId, dbPath, expenseFloor (number or JSON schedule), largeTxThreshold, " +
+      'floorExcludeGroups (JSON array), offsets (JSON object: group → payee substrings), gistId'
+  )
   .action((key: string, value: string) => {
-    const valid = ["budgetId", "dbPath", "expenseFloor", "largeTxThreshold"];
+    const valid = [
+      "budgetId",
+      "dbPath",
+      "expenseFloor",
+      "largeTxThreshold",
+      "floorExcludeGroups",
+      "offsets",
+      "gistId",
+    ];
     if (!valid.includes(key)) fail(new Error(`unknown key '${key}'; valid: ${valid.join(", ")}`));
     let parsed: unknown = value;
     if (key === "largeTxThreshold") parsed = parseFloat(value);
     if (key === "expenseFloor") {
       // accept a flat number or a JSON schedule: '{"2026-01": 13705, "2030-07": 21500}'
       parsed = value.trim().startsWith("{") ? JSON.parse(value) : parseFloat(value);
+    }
+    if (key === "floorExcludeGroups" || key === "offsets") {
+      try {
+        parsed = JSON.parse(value);
+      } catch {
+        fail(new Error(`${key} must be JSON, e.g. '["Investment Property"]' or '{"Investment Property": ["Winnemac"]}'`));
+      }
     }
     const merged = saveConfig({ [key]: parsed } as Partial<Config>);
     console.log(JSON.stringify(merged, null, 2));

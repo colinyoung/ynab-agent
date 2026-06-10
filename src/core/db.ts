@@ -35,6 +35,15 @@ CREATE TABLE IF NOT EXISTS payees (
   deleted INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,
+  month TEXT,          -- yyyy-mm the observation applies to (optional)
+  category TEXT,       -- category name it applies to (optional)
+  payee TEXT,          -- payee name it applies to (optional)
+  text TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS transactions (
   id TEXT PRIMARY KEY,
   date TEXT NOT NULL,

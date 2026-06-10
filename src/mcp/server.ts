@@ -5,6 +5,10 @@
  * Register in any MCP client, e.g. Claude:
  *   { "command": "ynab-agent-mcp", "env": { "YNAB_TOKEN": "..." } }
  */
+import { execFile } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -142,6 +146,40 @@ server.registerTool(
       await syncBudget(new YnabClient(getToken()), db, cfg.budgetId);
     }
     return text(generateObservedMd(db, cfg));
+  }
+);
+
+const execFileAsync = promisify(execFile);
+const CLI_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "cli", "index.js");
+
+server.registerTool(
+  "ynab_cli",
+  {
+    description:
+      "Run any ynab-agent CLI command directly and get its stdout. The full CLI surface " +
+      "(including commands added after this server was built): sync, budgets, accounts, " +
+      "tx list, spend, observe [--gist], note add/list/rm, config show/set/set-floor. " +
+      "Pass args as an array, e.g. [\"tx\", \"list\", \"--since\", \"2026-01\", \"--json\"]. " +
+      "Use [\"--help\"] or [\"<cmd>\", \"--help\"] to discover options. The CLI is read-only " +
+      "against YNAB; writes are limited to local config and notes.",
+    inputSchema: {
+      args: z.array(z.string()).describe("CLI arguments, e.g. ['spend', '--months', '6', '--json']"),
+    },
+  },
+  async ({ args }) => {
+    try {
+      const { stdout, stderr } = await execFileAsync(process.execPath, [CLI_PATH, ...args], {
+        timeout: 60_000,
+        maxBuffer: 10 * 1024 * 1024,
+        env: { ...process.env, NODE_NO_WARNINGS: "1" },
+      });
+      return text(stdout + (stderr ? `\n[stderr]\n${stderr}` : ""));
+    } catch (err) {
+      const e = err as { stdout?: string; stderr?: string; message?: string };
+      return text(
+        `command failed: ${e.message ?? "unknown error"}\n${e.stdout ?? ""}${e.stderr ? `\n[stderr]\n${e.stderr}` : ""}`
+      );
+    }
   }
 );
 

@@ -8,15 +8,20 @@
 import type { DatabaseSync } from "node:sqlite";
 import { describeFloor, floorForMonth, type Config } from "../core/config.js";
 import { getMeta } from "../core/db.js";
+import { listNotes, type Note } from "../core/notes.js";
 import {
   categorySpendByMonth,
   completeMonths,
   fmtUsd,
+  groupPnl,
   latestTxDate,
   listTransactions,
   monthlyTotals,
   toDollars,
 } from "../core/queries.js";
+
+/** Category groups never meaningful in spend drift (YNAB internals). */
+const INTERNAL_GROUPS = new Set(["Internal Master Category", "Credit Card Payments"]);
 
 export function generateObservedMd(db: DatabaseSync, cfg: Config): string {
   const lines: string[] = [];
@@ -32,12 +37,19 @@ export function generateObservedMd(db: DatabaseSync, cfg: Config): string {
 
   // --- Monthly outflow vs modeled floor ---
   const months = completeMonths(db, 3);
-  const totals = monthlyTotals(db, 14); // generous window; we filter below
+  const excl = cfg.floorExcludeGroups;
+  const totals = monthlyTotals(db, 14, excl); // generous window; we filter below
   const byMonth = new Map(totals.map((t) => [t.month, t]));
 
   lines.push("## Monthly outflow vs modeled floor");
   lines.push("");
   lines.push(`Modeled expense floor: ${describeFloor(cfg.expenseFloor)}`);
+  if (excl.length > 0) {
+    lines.push("");
+    lines.push(
+      `Excluded from floor comparison (reported separately below): ${excl.map((g) => `**${g}**`).join(", ")}`
+    );
+  }
   lines.push("");
   lines.push("| Month | Outflow | Floor | Δ vs floor | Inflow | Net |");
   lines.push("|---|---|---|---|---|---|");
@@ -84,10 +96,47 @@ export function generateObservedMd(db: DatabaseSync, cfg: Config): string {
   }
   lines.push("");
 
+  // --- Excluded group P&L (netted against offset payee inflows) ---
+  if (excl.length > 0 && months.length > 0) {
+    const sinceMonth = months[months.length - 1];
+    for (const group of excl) {
+      const offsetPayees = cfg.offsets[group] ?? [];
+      const pnl = groupPnl(db, group, offsetPayees, sinceMonth);
+      lines.push(`## ${group} — separate P&L`);
+      lines.push("");
+      if (offsetPayees.length > 0) {
+        lines.push(`Offset inflows matched by payee: ${offsetPayees.join(", ")}`);
+        lines.push("");
+      }
+      if (pnl.length > 0) {
+        lines.push("| Month | Costs | Offset inflows | Net |");
+        lines.push("|---|---|---|---|");
+        let netSum = 0;
+        for (const r of pnl) {
+          netSum += toDollars(r.net);
+          lines.push(
+            `| ${r.month} | ${fmtUsd(r.outflow)} | ${fmtUsd(r.offset_inflow)} | ${fmtUsd(r.net)} |`
+          );
+        }
+        lines.push("");
+        const verdict =
+          netSum >= 0
+            ? `self-funding over this window (+$${Math.round(netSum).toLocaleString("en-US")} net)`
+            : `costing $${Math.abs(Math.round(netSum)).toLocaleString("en-US")} net over this window`;
+        lines.push(`Net: ${group} is ${verdict}.`);
+      } else {
+        lines.push("_No activity in window._");
+      }
+      lines.push("");
+    }
+  }
+
   // --- Category drift: last complete month vs prior trailing average ---
   lines.push("## Category drift (last complete month vs prior 3-month avg)");
   lines.push("");
-  const catRows = categorySpendByMonth(db, 5);
+  const catRows = categorySpendByMonth(db, 5, excl).filter(
+    (r) => !INTERNAL_GROUPS.has(r.group_name)
+  );
   const lastMonth = months[0];
   if (lastMonth && catRows.length > 0) {
     const priorMonths = months.slice(1);
@@ -114,13 +163,25 @@ export function generateObservedMd(db: DatabaseSync, cfg: Config): string {
       drifts.push({ category: cat, last, avg, delta: last - avg });
     }
     drifts.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
-    lines.push(`| Category | ${lastMonth} | Prior avg | Δ |`);
-    lines.push("|---|---|---|---|");
+    const allNotes = listNotes(db, {}, 500);
+    const notesFor = (category: string): Note[] =>
+      allNotes.filter(
+        (n) =>
+          n.category !== null &&
+          (category.toLowerCase().includes(n.category.toLowerCase()) ||
+            n.category.toLowerCase().includes(category.toLowerCase()))
+      );
+    lines.push(`| Category | ${lastMonth} | Prior avg | Δ | Context |`);
+    lines.push("|---|---|---|---|---|");
     for (const d of drifts.slice(0, 10)) {
       if (Math.abs(d.delta) < 25) continue; // noise floor
       const sign = d.delta > 0 ? "+" : "−";
+      const ctx = notesFor(d.category)
+        .slice(0, 2)
+        .map((n) => (n.month ? `[${n.month}] ${n.text}` : n.text))
+        .join(" · ");
       lines.push(
-        `| ${d.category} | $${Math.round(d.last).toLocaleString("en-US")} | $${Math.round(d.avg).toLocaleString("en-US")} | ${sign}$${Math.abs(Math.round(d.delta)).toLocaleString("en-US")} |`
+        `| ${d.category} | $${Math.round(d.last).toLocaleString("en-US")} | $${Math.round(d.avg).toLocaleString("en-US")} | ${sign}$${Math.abs(Math.round(d.delta)).toLocaleString("en-US")} | ${ctx} |`
       );
     }
   } else {
@@ -147,6 +208,32 @@ export function generateObservedMd(db: DatabaseSync, cfg: Config): string {
     );
   } else {
     lines.push("_None._");
+  }
+  lines.push("");
+
+  // --- Context notes (institutional memory for agents) ---
+  const recentNotes = listNotes(db, {}, 15);
+  lines.push("## Context notes");
+  lines.push("");
+  if (recentNotes.length > 0) {
+    lines.push(
+      "_Observations recorded by humans or agents. Use these to interpret the numbers above; add new ones via `ynab-agent note add`._"
+    );
+    lines.push("");
+    for (const n of recentNotes) {
+      const scope = [
+        n.month ? `month:${n.month}` : null,
+        n.category ? `category:${n.category}` : null,
+        n.payee ? `payee:${n.payee}` : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      lines.push(`- ${scope ? `**(${scope})** ` : ""}${n.text}`);
+    }
+  } else {
+    lines.push(
+      "_None yet. Record explanations for anomalies (`ynab-agent note add \"...\" --category X --month yyyy-mm`) so future reports self-explain._"
+    );
   }
   lines.push("");
 

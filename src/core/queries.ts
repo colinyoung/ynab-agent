@@ -23,7 +23,26 @@ export interface MonthlyTotal {
   net: number; // milliunits
 }
 
-export function monthlyTotals(db: DatabaseSync, months: number): MonthlyTotal[] {
+/** SQL fragment + params excluding categories in the given groups (NULL category passes). */
+function excludeGroupsClause(
+  alias: string,
+  excludeGroups: string[]
+): { sql: string; params: string[] } {
+  if (excludeGroups.length === 0) return { sql: "", params: [] };
+  const ph = excludeGroups.map(() => "?").join(", ");
+  return {
+    sql: ` AND (${alias}category_id IS NULL OR ${alias}category_id NOT IN
+            (SELECT id FROM categories WHERE group_name IN (${ph})))`,
+    params: excludeGroups,
+  };
+}
+
+export function monthlyTotals(
+  db: DatabaseSync,
+  months: number,
+  excludeGroups: string[] = []
+): MonthlyTotal[] {
+  const ex = excludeGroupsClause("", excludeGroups);
   const rows = db
     .prepare(
       `SELECT substr(date, 1, 7) AS month,
@@ -31,10 +50,10 @@ export function monthlyTotals(db: DatabaseSync, months: number): MonthlyTotal[] 
               SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END) AS inflow,
               SUM(amount) AS net
        FROM effective_tx
-       WHERE ${SPEND_FILTER}
+       WHERE ${SPEND_FILTER} ${ex.sql}
        GROUP BY month ORDER BY month DESC LIMIT ?`
     )
-    .all(months) as unknown as MonthlyTotal[];
+    .all(...ex.params, months) as unknown as MonthlyTotal[];
   return rows.reverse();
 }
 
@@ -45,11 +64,16 @@ export interface CategoryMonth {
   outflow: number; // milliunits, positive
 }
 
-export function categorySpendByMonth(db: DatabaseSync, months: number): CategoryMonth[] {
+export function categorySpendByMonth(
+  db: DatabaseSync,
+  months: number,
+  excludeGroups: string[] = []
+): CategoryMonth[] {
   const cutoff = new Date();
   cutoff.setUTCDate(1);
   cutoff.setUTCMonth(cutoff.getUTCMonth() - months);
   const cutoffMonth = cutoff.toISOString().slice(0, 7);
+  const ex = excludeGroupsClause("e.", excludeGroups);
   return db
     .prepare(
       `SELECT substr(e.date, 1, 7) AS month,
@@ -61,11 +85,70 @@ export function categorySpendByMonth(db: DatabaseSync, months: number): Category
        WHERE e.amount < 0
          AND e.transfer_account_id IS NULL
          AND e.account_id IN (SELECT id FROM accounts WHERE on_budget = 1)
-         AND substr(e.date, 1, 7) >= ?
+         AND substr(e.date, 1, 7) >= ? ${ex.sql}
        GROUP BY month, category
        ORDER BY month ASC, outflow DESC`
     )
-    .all(cutoffMonth) as unknown as CategoryMonth[];
+    .all(cutoffMonth, ...ex.params) as unknown as CategoryMonth[];
+}
+
+export interface GroupPnlRow {
+  month: string;
+  outflow: number; // milliunits, positive
+  offset_inflow: number; // milliunits, positive — inflows from offset payees
+  net: number; // milliunits; negative = group costs money
+}
+
+/**
+ * Netted P&L for an excluded category group: the group's outflows vs inflows
+ * from its offset payees (e.g. rental income against property costs).
+ */
+export function groupPnl(
+  db: DatabaseSync,
+  group: string,
+  offsetPayees: string[],
+  sinceMonth: string
+): GroupPnlRow[] {
+  const out = db
+    .prepare(
+      `SELECT substr(e.date, 1, 7) AS month, -SUM(e.amount) AS outflow
+       FROM effective_tx e
+       WHERE e.amount < 0 AND e.transfer_account_id IS NULL
+         AND e.account_id IN (SELECT id FROM accounts WHERE on_budget = 1)
+         AND e.category_id IN (SELECT id FROM categories WHERE group_name = ?)
+         AND substr(e.date, 1, 7) >= ?
+       GROUP BY month`
+    )
+    .all(group, sinceMonth) as unknown as { month: string; outflow: number }[];
+
+  const inflowByMonth = new Map<string, number>();
+  if (offsetPayees.length > 0) {
+    const like = offsetPayees.map(() => "LOWER(COALESCE(e.payee_name,'')) LIKE ?").join(" OR ");
+    const rows = db
+      .prepare(
+        `SELECT substr(e.date, 1, 7) AS month, SUM(e.amount) AS inflow
+         FROM effective_tx e
+         WHERE e.amount > 0 AND e.transfer_account_id IS NULL
+           AND e.account_id IN (SELECT id FROM accounts WHERE on_budget = 1)
+           AND (${like})
+           AND substr(e.date, 1, 7) >= ?
+         GROUP BY month`
+      )
+      .all(...offsetPayees.map((p) => `%${p.toLowerCase()}%`), sinceMonth) as unknown as {
+      month: string;
+      inflow: number;
+    }[];
+    for (const r of rows) inflowByMonth.set(r.month, r.inflow);
+  }
+
+  const monthSet = new Set([...out.map((r) => r.month), ...inflowByMonth.keys()]);
+  return [...monthSet]
+    .sort()
+    .map((month) => {
+      const outflow = out.find((r) => r.month === month)?.outflow ?? 0;
+      const offset_inflow = inflowByMonth.get(month) ?? 0;
+      return { month, outflow, offset_inflow, net: offset_inflow - outflow };
+    });
 }
 
 export interface TxRow {
