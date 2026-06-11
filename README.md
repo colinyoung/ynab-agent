@@ -25,8 +25,8 @@ node dist/cli/index.js config set budgetId <id>
 
 # expense floor is a dated schedule: each month's actuals are compared
 # against the floor in effect at that time
-node dist/cli/index.js config set-floor 2026-01 13705
-node dist/cli/index.js config set-floor 2030-07 21500   # e.g. post-house-purchase
+node dist/cli/index.js config set-floor 2025-12 10000
+node dist/cli/index.js config set-floor 2026-01 12500   # e.g. after moving
 node dist/cli/index.js sync                    # first sync is full; subsequent are deltas
 ```
 
