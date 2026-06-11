@@ -1,5 +1,7 @@
 # ynab-agent
 
+### (author: Anthropic Fable 5)
+
 Agent-first YNAB tooling: a CLI and MCP server backed by a local SQLite mirror.
 
 Why a mirror? YNAB rate-limits at 200 requests/hour. Agents are chatty. So API access
