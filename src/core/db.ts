@@ -79,7 +79,10 @@ CREATE INDEX IF NOT EXISTS idx_subtx_parent ON subtransactions(transaction_id);
 
 -- "Effective" transactions: split parents are replaced by their subtransactions
 -- (which carry the real categories); everything else passes through.
-CREATE VIEW IF NOT EXISTS effective_tx AS
+-- approved=0 rows are bank imports matched to a manually-entered transaction —
+-- the approved=1 entry covers them, so excluding here prevents double-counting.
+DROP VIEW IF EXISTS effective_tx;
+CREATE VIEW effective_tx AS
 SELECT
   t.id            AS id,
   t.id            AS parent_id,
@@ -93,7 +96,7 @@ SELECT
   t.category_name AS category_name,
   t.transfer_account_id AS transfer_account_id
 FROM transactions t
-WHERE t.deleted = 0 AND t.has_subtransactions = 0
+WHERE t.deleted = 0 AND t.approved = 1 AND t.has_subtransactions = 0
 UNION ALL
 SELECT
   s.id            AS id,
@@ -109,7 +112,7 @@ SELECT
   s.transfer_account_id AS transfer_account_id
 FROM subtransactions s
 JOIN transactions t ON t.id = s.transaction_id
-WHERE s.deleted = 0 AND t.deleted = 0;
+WHERE s.deleted = 0 AND t.deleted = 0 AND t.approved = 1;
 `;
 
 export function openDb(dbPath: string): DatabaseSync {

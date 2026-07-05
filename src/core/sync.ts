@@ -29,8 +29,14 @@ function lastKnowledge(db: DatabaseSync, budgetId: string, resource: string): nu
 export async function syncBudget(
   client: YnabClient,
   db: DatabaseSync,
-  budgetId: string
+  budgetId: string,
+  full = false
 ): Promise<SyncResult> {
+  if (full) {
+    for (const resource of ["accounts", "categories", "payees", "transactions"]) {
+      db.prepare("DELETE FROM meta WHERE key = ?").run(skKey(budgetId, resource));
+    }
+  }
   // --- accounts ---
   const acctData = await client.get<{ accounts: Account[]; server_knowledge: number }>(
     `/budgets/${budgetId}/accounts`,
