@@ -5,6 +5,7 @@ import { YnabClient, type BudgetSummary } from "../core/api.js";
 import { configPath, getToken, loadConfig, saveConfig, type Config } from "../core/config.js";
 import { openDb } from "../core/db.js";
 import {
+  categoryPayeeBreakdown,
   categorySpendByMonth,
   categorySpendInRange,
   fmtUsd,
@@ -57,16 +58,18 @@ program
 program
   .command("sync")
   .description("Delta-sync the configured budget into the local SQLite mirror")
-  .action(async () => {
+  .option("--full", "reset server knowledge and re-pull everything (fixes missed deletions/merges)")
+  .action(async (opts: { full?: boolean }) => {
     try {
       const cfg = loadConfig();
       const client = new YnabClient(getToken());
       const db = openDb(cfg.dbPath);
-      const result = await syncBudget(client, db, cfg.budgetId);
+      const result = await syncBudget(client, db, cfg.budgetId, !!opts.full);
       out(result, !!program.opts().json, () => {
+        const mode = opts.full ? "full" : "delta";
         console.log(
           `synced budget=${result.budgetId}: ${result.transactions} tx, ` +
-            `${result.accounts} accounts, ${result.categories} categories, ${result.payees} payees (delta)`
+            `${result.accounts} accounts, ${result.categories} categories, ${result.payees} payees (${mode})`
         );
       });
     } catch (e) {
@@ -134,12 +137,26 @@ program
   .description("Spend summaries from the local mirror")
   .option("--months <n>", "window in months (default 3)", (v) => parseInt(v, 10), 3)
   .option("--by <dim>", "'month' (default) or 'category'", "month")
-  .action((opts: { months: number; by: string }) => {
+  .option("--no-uncategorized", "exclude uncategorized transactions from --by category view")
+  .option("--detail <category>", "show payee breakdown within a category instead of category totals")
+  .action((opts: { months: number; by: string; uncategorized: boolean; detail?: string }) => {
     try {
       const cfg = loadConfig();
       const db = openDb(cfg.dbPath);
-      if (opts.by === "category") {
-        const rows = categorySpendByMonth(db, opts.months);
+      if (opts.detail) {
+        const rows = categoryPayeeBreakdown(db, opts.detail, opts.months);
+        out(rows.map((r) => ({ ...r, outflow_usd: toDollars(r.outflow), avg_usd: toDollars(r.avg) })), !!program.opts().json, () => {
+          console.log(`\n== ${opts.detail} — top payees (last ${opts.months} month${opts.months === 1 ? "" : "s"}) ==`);
+          for (const r of rows) {
+            console.log(
+              `  ${r.payee.padEnd(36)} ${fmtUsd(r.outflow).padStart(12)}   ${String(r.count).padStart(3)}x  avg ${fmtUsd(r.avg)}`
+            );
+          }
+          const total = rows.reduce((s, r) => s + r.outflow, 0);
+          console.log(`\n  ${"total".padEnd(36)} ${fmtUsd(total).padStart(12)}`);
+        });
+      } else if (opts.by === "category") {
+        const rows = categorySpendByMonth(db, opts.months, [], !opts.uncategorized);
         out(rows.map((r) => ({ ...r, outflow_usd: toDollars(r.outflow) })), !!program.opts().json, () => {
           let month = "";
           for (const r of rows) {
