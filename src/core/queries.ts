@@ -67,13 +67,17 @@ export interface CategoryMonth {
 export function categorySpendByMonth(
   db: DatabaseSync,
   months: number,
-  excludeGroups: string[] = []
+  excludeGroups: string[] = [],
+  excludeUncategorized = false
 ): CategoryMonth[] {
   const cutoff = new Date();
   cutoff.setUTCDate(1);
   cutoff.setUTCMonth(cutoff.getUTCMonth() - months);
   const cutoffMonth = cutoff.toISOString().slice(0, 7);
   const ex = excludeGroupsClause("e.", excludeGroups);
+  const uncatClause = excludeUncategorized
+    ? " AND e.category_name IS NOT NULL AND e.category_name != 'Uncategorized'"
+    : "";
   return db
     .prepare(
       `SELECT substr(e.date, 1, 7) AS month,
@@ -85,11 +89,45 @@ export function categorySpendByMonth(
        WHERE e.amount < 0
          AND e.transfer_account_id IS NULL
          AND e.account_id IN (SELECT id FROM accounts WHERE on_budget = 1)
-         AND substr(e.date, 1, 7) >= ? ${ex.sql}
+         AND substr(e.date, 1, 7) >= ?${uncatClause} ${ex.sql}
        GROUP BY month, category
        ORDER BY month ASC, outflow DESC`
     )
     .all(cutoffMonth, ...ex.params) as unknown as CategoryMonth[];
+}
+
+export interface PayeeTotal {
+  payee: string;
+  outflow: number; // milliunits, positive
+  count: number;
+  avg: number; // milliunits
+}
+
+export function categoryPayeeBreakdown(
+  db: DatabaseSync,
+  categorySubstr: string,
+  months: number
+): PayeeTotal[] {
+  const cutoff = new Date();
+  cutoff.setUTCDate(1);
+  cutoff.setUTCMonth(cutoff.getUTCMonth() - months);
+  const cutoffMonth = cutoff.toISOString().slice(0, 7);
+  return db
+    .prepare(
+      `SELECT COALESCE(e.payee_name, '(no payee)') AS payee,
+              -SUM(e.amount) AS outflow,
+              COUNT(*) AS count,
+              -AVG(e.amount) AS avg
+       FROM effective_tx e
+       WHERE e.amount < 0
+         AND e.transfer_account_id IS NULL
+         AND e.account_id IN (SELECT id FROM accounts WHERE on_budget = 1)
+         AND LOWER(COALESCE(e.category_name, '')) LIKE ?
+         AND substr(e.date, 1, 7) >= ?
+       GROUP BY payee
+       ORDER BY outflow DESC`
+    )
+    .all(`%${categorySubstr.toLowerCase()}%`, cutoffMonth) as unknown as PayeeTotal[];
 }
 
 export function categorySpendInRange(
